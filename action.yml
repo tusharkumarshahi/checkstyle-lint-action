@@ -1,0 +1,52 @@
+name: 'Checkstyle Lint Action'
+description: 'Run Checkstyle and enforce code quality standards on pull requests'
+author: 'tusharkumarshahi'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  checkstyle-config:
+    description: 'Checkstyle configuration file (google_checks.xml, sun_checks.xml, or path to custom)'
+    required: false
+    default: 'google_checks.xml'
+  
+  max-errors:
+    description: 'Maximum number of errors allowed before failing'
+    required: false
+    default: '0'
+  
+  max-warnings:
+    description: 'Maximum number of warnings allowed before failing'
+    required: false
+    default: '10'
+  
+  fail-on-error:
+    description: 'Fail the check if errors exceed threshold'
+    required: false
+    default: 'true'
+  
+  source-directory:
+    description: 'Source directory to check'
+    required: false
+    default: 'src/main/java'
+  
+  github-token:
+    description: 'GitHub token for PR comments'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  error-count:
+    description: 'Number of errors found'
+  
+  warning-count:
+    description: 'Number of warnings found'
+  
+  passed:
+    description: 'Whether the check passed (true/false)'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
