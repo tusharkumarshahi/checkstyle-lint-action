@@ -2,7 +2,7 @@
   "name": "checkstyle-lint-action",
   "version": "1.0.0",
   "description": "Custom GitHub Action for Checkstyle linting",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
     "build": "ncc build src/index.js -o dist",
     "test": "jest"
@@ -13,15 +13,15 @@
     "linting",
     "code-quality"
   ],
-  "author": "YOUR-USERNAME",
+  "author": "tusharkumarshahi",
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.10.1",
-    "@actions/github": "^6.0.0",
     "@actions/exec": "^1.1.1",
+    "@actions/github": "^6.0.0",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
-    "@vercel/ncc": "^0.38.1"
+    "@vercel/ncc": "^0.38.4"
   }
 }
