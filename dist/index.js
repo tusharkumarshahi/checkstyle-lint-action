@@ -1,4 +1,4 @@
-/******/ (() => { // webpackBootstrap
+require('./sourcemap-register.js');/******/ (() => { // webpackBootstrap
 /******/ 	var __webpack_modules__ = ({
 
 /***/ 4914:
@@ -38559,7 +38559,10 @@ const core = __nccwpck_require__(7484);
 const github = __nccwpck_require__(3228);
 const exec = __nccwpck_require__(5236);
 const fs = __nccwpck_require__(9896);
-const xml2js = __nccwpck_require__(758);
+const { parseString } = __nccwpck_require__(758);
+const { promisify } = __nccwpck_require__(9023);
+
+const parseXml = promisify(parseString);
 
 async function run() {
   try {
@@ -38568,134 +38571,88 @@ async function run() {
     const maxErrors = parseInt(core.getInput('max-errors'));
     const maxWarnings = parseInt(core.getInput('max-warnings'));
     const failOnError = core.getInput('fail-on-error') === 'true';
+    const checkOnlyDiff = core.getInput('check-only-diff') === 'true';
     const sourceDir = core.getInput('source-directory');
     const token = core.getInput('github-token');
 
-    core.info('🔍 Starting Checkstyle analysis...');
+    core.info('🔍 Starting Checkstyle Analysis');
     core.info(`Configuration: ${checkstyleConfig}`);
-    core.info(`Max errors: ${maxErrors}, Max warnings: ${maxWarnings}`);
+    core.info(`Thresholds: Errors=${maxErrors}, Warnings=${maxWarnings}`);
+    core.info(`Check only diff: ${checkOnlyDiff}`);
 
-    // Run Checkstyle using Maven
-    const checkstyleResultPath = 'target/checkstyle-result.xml';
-    
-    core.info('Running Checkstyle via Maven...');
-    
-    try {
-      await exec.exec('mvn', [
-        'checkstyle:checkstyle',
-        `-Dcheckstyle.config.location=${checkstyleConfig}`,
-        '-Dcheckstyle.consoleOutput=true'
-      ]);
-    } catch (error) {
-      // Checkstyle might return non-zero even on success
-      core.warning('Checkstyle execution completed with warnings');
+    // Get changed files if checking only diff
+    let filesToCheck = null;
+    if (checkOnlyDiff && github.context.eventName === 'pull_request') {
+      filesToCheck = await getChangedFiles(token);
+      core.info(`Found ${filesToCheck.length} changed Java files`);
     }
 
-    // Check if result file exists
-    if (!fs.existsSync(checkstyleResultPath)) {
-      core.setFailed('Checkstyle result file not found. Ensure Maven Checkstyle plugin is configured.');
-      return;
-    }
+    // Run Checkstyle
+    await runCheckstyle(checkstyleConfig);
 
-    // Parse Checkstyle results
-    const xmlContent = fs.readFileSync(checkstyleResultPath, 'utf-8');
-    const parser = new xml2js.Parser();
-    const result = await parser.parseStringPromise(xmlContent);
-
-    // Count errors and warnings
-    let errorCount = 0;
-    let warningCount = 0;
-    let infoCount = 0;
-    const violations = [];
-
-    if (result.checkstyle && result.checkstyle.file) {
-      for (const file of result.checkstyle.file) {
-        const fileName = file.$.name;
-        
-        if (file.error) {
-          for (const error of file.error) {
-            const severity = error.$.severity;
-            const line = error.$.line;
-            const message = error.$.message;
-            const source = error.$.source;
-
-            violations.push({
-              file: fileName,
-              line: line,
-              severity: severity,
-              message: message,
-              source: source
-            });
-
-            if (severity === 'error') {
-              errorCount++;
-            } else if (severity === 'warning') {
-              warningCount++;
-            } else {
-              infoCount++;
-            }
-          }
-        }
-      }
-    }
+    // Parse results
+    const results = await parseCheckstyleResults('target/checkstyle-result.xml', filesToCheck);
 
     // Log summary
     core.info('');
     core.info('📊 Checkstyle Results:');
-    core.info(`  Errors: ${errorCount}`);
-    core.info(`  Warnings: ${warningCount}`);
-    core.info(`  Info: ${infoCount}`);
+    core.info(`  Files Checked: ${results.filesChecked}`);
+    core.info(`  Errors: ${results.errorCount}`);
+    core.info(`  Warnings: ${results.warningCount}`);
+    core.info(`  Info: ${results.infoCount}`);
     core.info('');
 
     // Set outputs
-    core.setOutput('error-count', errorCount);
-    core.setOutput('warning-count', warningCount);
+    core.setOutput('error-count', results.errorCount);
+    core.setOutput('warning-count', results.warningCount);
+    core.setOutput('info-count', results.infoCount);
+    core.setOutput('files-checked', results.filesChecked);
 
     // Determine pass/fail
-    const errorsExceeded = errorCount > maxErrors;
-    const warningsExceeded = warningCount > maxWarnings;
+    const errorsExceeded = results.errorCount > maxErrors;
+    const warningsExceeded = results.warningCount > maxWarnings;
     const passed = !errorsExceeded && !warningsExceeded;
 
     core.setOutput('passed', passed);
 
-    // Create PR comment if this is a pull request
+    // Create PR comment if this is a PR
     if (github.context.eventName === 'pull_request') {
       await createPRComment(
         token,
-        errorCount,
-        warningCount,
-        infoCount,
-        violations,
+        results,
         passed,
         maxErrors,
-        maxWarnings
+        maxWarnings,
+        checkOnlyDiff
       );
     }
 
     // Create annotations for violations
-    if (violations.length > 0) {
-      createAnnotations(violations);
+    if (results.violations.length > 0) {
+      createAnnotations(results.violations);
     }
 
     // Final status
     if (!passed) {
-      const failureMessage = [];
+      const failureMessages = [];
       
       if (errorsExceeded) {
-        failureMessage.push(`❌ Errors: ${errorCount} (max: ${maxErrors})`);
+        failureMessages.push(`❌ Errors: ${results.errorCount} (max: ${maxErrors})`);
       }
       
       if (warningsExceeded) {
-        failureMessage.push(`⚠️  Warnings: ${warningCount} (max: ${maxWarnings})`);
+        failureMessages.push(`⚠️  Warnings: ${results.warningCount} (max: ${maxWarnings})`);
       }
 
+      const message = failureMessages.join('\n');
+      
       if (failOnError) {
-        core.setFailed(failureMessage.join('\n'));
+        core.setFailed(message);
       } else {
-        core.warning(failureMessage.join('\n'));
+        core.warning(message);
       }
     } else {
-      core.info('✅ All checks passed!');
+      core.info('✅ All quality checks passed!');
     }
 
   } catch (error) {
@@ -38703,48 +38660,176 @@ async function run() {
   }
 }
 
-async function createPRComment(token, errorCount, warningCount, infoCount, violations, passed, maxErrors, maxWarnings) {
+async function getChangedFiles(token) {
+  try {
+    const octokit = github.getOctokit(token);
+    const { data: files } = await octokit.rest.pulls.listFiles({
+      owner: github.context.repo.owner,
+      repo: github.context.repo.repo,
+      pull_number: github.context.payload.pull_request.number
+    });
+
+    // Filter only Java files
+    return files
+      .filter(file => file.filename.endsWith('.java'))
+      .map(file => file.filename);
+  } catch (error) {
+    core.warning(`Could not get changed files: ${error.message}`);
+    return null;
+  }
+}
+
+async function runCheckstyle(configLocation) {
+  core.info('Running Checkstyle via Maven...');
+  
+  try {
+    await exec.exec('mvn', [
+      'checkstyle:checkstyle',
+      `-Dcheckstyle.config.location=${configLocation}`,
+      '-Dcheckstyle.consoleOutput=false',
+      '--batch-mode'
+    ]);
+  } catch (error) {
+    // Checkstyle might return non-zero even on success with violations
+    core.debug('Checkstyle execution completed');
+  }
+}
+
+async function parseCheckstyleResults(filePath, filesToCheck) {
+  if (!fs.existsSync(filePath)) {
+    throw new Error('Checkstyle result file not found. Ensure Maven Checkstyle plugin is configured in pom.xml');
+  }
+
+  const xmlContent = fs.readFileSync(filePath, 'utf-8');
+  const result = await parseXml(xmlContent);
+
+  let errorCount = 0;
+  let warningCount = 0;
+  let infoCount = 0;
+  const violations = [];
+  const filesChecked = new Set();
+
+  if (result.checkstyle && result.checkstyle.file) {
+    for (const file of result.checkstyle.file) {
+      const fileName = file.$.name;
+      
+      // Skip if checking only diff and this file isn't in the diff
+      if (filesToCheck && !filesToCheck.some(f => fileName.includes(f))) {
+        continue;
+      }
+
+      filesChecked.add(fileName);
+      
+      if (file.error) {
+        for (const error of file.error) {
+          const severity = error.$.severity || 'info';
+          const line = error.$.line;
+          const column = error.$.column || '1';
+          const message = error.$.message;
+          const source = error.$.source || '';
+
+          violations.push({
+            file: fileName,
+            line: parseInt(line),
+            column: parseInt(column),
+            severity: severity,
+            message: message,
+            source: source
+          });
+
+          if (severity === 'error') {
+            errorCount++;
+          } else if (severity === 'warning') {
+            warningCount++;
+          } else {
+            infoCount++;
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    errorCount,
+    warningCount,
+    infoCount,
+    violations,
+    filesChecked: filesChecked.size
+  };
+}
+
+async function createPRComment(token, results, passed, maxErrors, maxWarnings, checkOnlyDiff) {
   try {
     const octokit = github.getOctokit(token);
     const context = github.context;
 
     // Create comment body
-    let commentBody = '## 🔍 Checkstyle Report\n\n';
+    let commentBody = '## 🔍 Checkstyle Lint Report\n\n';
 
     if (passed) {
-      commentBody += '### ✅ All checks passed!\n\n';
+      commentBody += '### ✅ All quality checks passed!\n\n';
     } else {
-      commentBody += '### ❌ Quality checks failed\n\n';
+      commentBody += '### ❌ Code quality issues found\n\n';
     }
 
+    // Summary table
     commentBody += '| Metric | Count | Threshold | Status |\n';
     commentBody += '|--------|-------|-----------|--------|\n';
-    commentBody += `| Errors | ${errorCount} | ${maxErrors} | ${errorCount <= maxErrors ? '✅' : '❌'} |\n`;
-    commentBody += `| Warnings | ${warningCount} | ${maxWarnings} | ${warningCount <= maxWarnings ? '✅' : '⚠️'} |\n`;
-    commentBody += `| Info | ${infoCount} | - | ℹ️ |\n\n`;
+    commentBody += `| Errors | ${results.errorCount} | ${maxErrors} | ${results.errorCount <= maxErrors ? '✅' : '❌'} |\n`;
+    commentBody += `| Warnings | ${results.warningCount} | ${maxWarnings} | ${results.warningCount <= maxWarnings ? '✅' : '⚠️'} |\n`;
+    commentBody += `| Info | ${results.infoCount} | - | ℹ️ |\n`;
+    commentBody += `| Files Checked | ${results.filesChecked} | - | 📁 |\n\n`;
 
-    // Add top violations
-    if (violations.length > 0) {
+    if (checkOnlyDiff) {
+      commentBody += '> 📝 Only changed files were checked (faster analysis)\n\n';
+    }
+
+    // Top violations by severity
+    if (results.violations.length > 0) {
+      const errors = results.violations.filter(v => v.severity === 'error').slice(0, 5);
+      const warnings = results.violations.filter(v => v.severity === 'warning').slice(0, 5);
+
       commentBody += '<details>\n';
-      commentBody += '<summary>📋 Top Issues (click to expand)</summary>\n\n';
-      
-      const topViolations = violations.slice(0, 10);
-      
-      commentBody += '| File | Line | Severity | Message |\n';
-      commentBody += '|------|------|----------|----------|\n';
-      
-      for (const v of topViolations) {
-        const fileName = v.file.split('/').pop();
-        const severity = v.severity === 'error' ? '❌' : v.severity === 'warning' ? '⚠️' : 'ℹ️';
-        commentBody += `| ${fileName} | ${v.line} | ${severity} | ${v.message} |\n`;
+      commentBody += '<summary>📋 Issues Found (click to expand)</summary>\n\n';
+
+      if (errors.length > 0) {
+        commentBody += '#### ❌ Errors\n\n';
+        commentBody += '| File | Line | Message |\n';
+        commentBody += '|------|------|----------|\n';
+        for (const v of errors) {
+          const shortFile = v.file.split('/').slice(-2).join('/');
+          commentBody += `| \`${shortFile}\` | ${v.line} | ${v.message} |\n`;
+        }
+        commentBody += '\n';
       }
-      
-      if (violations.length > 10) {
-        commentBody += `\n_... and ${violations.length - 10} more issues_\n`;
+
+      if (warnings.length > 0) {
+        commentBody += '#### ⚠️ Warnings\n\n';
+        commentBody += '| File | Line | Message |\n';
+        commentBody += '|------|------|----------|\n';
+        for (const v of warnings) {
+          const shortFile = v.file.split('/').slice(-2).join('/');
+          commentBody += `| \`${shortFile}\` | ${v.line} | ${v.message} |\n`;
+        }
+        commentBody += '\n';
       }
-      
+
+      const remaining = results.violations.length - 10;
+      if (remaining > 0) {
+        commentBody += `\n_... and ${remaining} more issues_\n`;
+      }
+
       commentBody += '\n</details>\n\n';
     }
+
+    // Guidelines
+    commentBody += '<details>\n';
+    commentBody += '<summary>📖 Code Quality Guidelines</summary>\n\n';
+    commentBody += '**Error**: Must be fixed before merge\n';
+    commentBody += '**Warning**: Should be fixed, may be acceptable in some cases\n';
+    commentBody += '**Info**: Suggestions for improvement\n\n';
+    commentBody += 'For more details, check the [Checkstyle documentation](https://checkstyle.org/)\n';
+    commentBody += '</details>\n\n';
 
     commentBody += '---\n';
     commentBody += '_Generated by [Checkstyle Lint Action](https://github.com/YOUR-USERNAME/checkstyle-lint-action)_';
@@ -38764,30 +38849,38 @@ async function createPRComment(token, errorCount, warningCount, infoCount, viola
 }
 
 function createAnnotations(violations) {
-  // GitHub Actions supports max 10 annotations at a time
+  // GitHub Actions supports max 10 annotations per run
   const topViolations = violations.slice(0, 10);
   
   for (const v of topViolations) {
     const level = v.severity === 'error' ? 'error' : 'warning';
-    const message = `[Checkstyle] ${v.message}`;
+    const message = `[Checkstyle ${v.severity}] ${v.message}`;
     
     if (level === 'error') {
       core.error(message, {
         file: v.file,
-        startLine: parseInt(v.line),
+        startLine: v.line,
+        startColumn: v.column,
         title: 'Checkstyle Error'
       });
     } else {
       core.warning(message, {
         file: v.file,
-        startLine: parseInt(v.line),
+        startLine: v.line,
+        startColumn: v.column,
         title: 'Checkstyle Warning'
       });
     }
   }
+  
+  if (violations.length > 10) {
+    core.info(`Note: Showing first 10 annotations. Total issues: ${violations.length}`);
+  }
 }
 
 run();
+
 module.exports = __webpack_exports__;
 /******/ })()
 ;
+//# sourceMappingURL=index.js.map
