@@ -1,5 +1,5 @@
-name: 'Checkstyle Lint Action'
-description: 'Run Checkstyle and enforce code quality standards on pull requests'
+name: 'Java Checkstyle Lint'
+description: 'Run Checkstyle linting with configurable thresholds and PR comments'
 author: 'tusharkumarshahi'
 
 branding:
@@ -13,19 +13,24 @@ inputs:
     default: 'google_checks.xml'
   
   max-errors:
-    description: 'Maximum number of errors allowed before failing'
+    description: 'Maximum number of errors allowed'
     required: false
     default: '0'
   
   max-warnings:
-    description: 'Maximum number of warnings allowed before failing'
+    description: 'Maximum number of warnings allowed'
     required: false
     default: '10'
   
   fail-on-error:
-    description: 'Fail the check if errors exceed threshold'
+    description: 'Fail the check if thresholds are exceeded'
     required: false
     default: 'true'
+  
+  check-only-diff:
+    description: 'Only check files changed in PR (faster)'
+    required: false
+    default: 'false'
   
   source-directory:
     description: 'Source directory to check'
@@ -33,19 +38,25 @@ inputs:
     default: 'src/main/java'
   
   github-token:
-    description: 'GitHub token for PR comments'
+    description: 'GitHub token for creating PR comments'
     required: false
     default: ${{ github.token }}
 
 outputs:
   error-count:
-    description: 'Number of errors found'
+    description: 'Total number of errors found'
   
   warning-count:
-    description: 'Number of warnings found'
+    description: 'Total number of warnings found'
+  
+  info-count:
+    description: 'Total number of info messages found'
   
   passed:
     description: 'Whether the check passed (true/false)'
+  
+  files-checked:
+    description: 'Number of files checked'
 
 runs:
   using: 'node20'
